@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>SOW Generator — Upload & Convert to Base64 (Pure PizZip)</title>
+
+    <!-- PizZip + FileSaver -->
+    <script src="https://cdn.jsdelivr.net/npm/pizzip@3.1.6/dist/pizzip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 900px;
+            margin: auto
+        }
+        
+        h1 {
+            margin-bottom: 8px
+        }
+        
+        label {
+            display: block;
+            margin: 8px 0
+        }
+        
+        input[type="text"],
+        input[type="date"],
+        input[type="number"] {
+            margin-left: 8px;
+        }
+        
+        #activities div {
+            margin: 8px 0;
+            padding: 6px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+        }
+        
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            font-family: monospace;
+        }
+        
+        .small {
+            font-size: 0.9rem;
+            color: #444
+        }
+        
+        .btn {
+            padding: 8px 12px;
+            margin: 6px 6px 6px 0;
+            cursor: pointer
+        }
+    </style>
+</head>
+
+<body>
+    <h1>SOW Generator — Upload template & generate (PizZip only)</h1>
+
+    <section>
+        <label>1) Upload your real Word template (.docx) — this reads it and stores Base64 in localStorage:
+    <input type="file" id="fileUpload" accept=".docx">
+  </label>
+        <div class="small">Template must contain placeholders like: <code>{clientName}</code> <code>{projectName}</code> <code>{startDate}</code> <code>{endDate}</code> <code>{activitiesTable}</code> <code>{totalEffort}</code> <code>{totalCost}</code></div>
+        <button id="showBase64Btn" class="btn">Show saved Base64 (for copy)</button>
+        <button id="clearBase64Btn" class="btn">Clear stored template</button>
+        <div id="base64Box" style="margin-top:8px; display:none">
+            <div class="small">Template Base64 (copy if you want to embed in static HTML):</div>
+            <textarea id="templateBase64"></textarea>
+        </div>
+    </section>
+
+    <hr>
+
+    <section>
+        <h2>2) Fill SOW inputs</h2>
+        <label>Client Name: <input type="text" id="clientName" placeholder="Acme Corp"></label>
+        <label>Project Name: <input type="text" id="projectName" placeholder="Pentest Engagement"></label>
+        <label>Start Date: <input type="date" id="startDate"></label>
+        <label>End Date: <input type="date" id="endDate"></label>
+
+        <h3>Activities</h3>
+        <div id="activities"></div>
+        <button type="button" id="addActivityBtn" class="btn">+ Add Activity</button>
+        <button type="button" id="fillSampleBtn" class="btn">Fill sample activities</button>
+    </section>
+
+    <hr>
+
+    <section>
+        <h2>3) Generate filled .docx</h2>
+        <div class="small">If you uploaded a template, the script will use it from localStorage. Otherwise you can paste a valid Base64 template in the area below (not recommended unless you know it's valid).</div>
+        <label>Optional: Paste Base64 template (overrides stored template):
+    <textarea id="pasteBase64" placeholder="Paste a full Base64 .docx here to use it temporarily"></textarea>
+  </label>
+
+        <button id="generateBtn" class="btn">Generate SOW .docx</button>
+        <div id="status" style="margin-top:12px;color:#900"></div>
+    </section>
+
+    <hr>
+
+    <section>
+        <h3>Debug / Test tools</h3>
+        <button id="testPizZip" class="btn">Test PizZip available</button>
+        <div id="pzStatus" class="small"></div>
+    </section>
+
+    <script>
+        /* ----------------- Utility: base64 <-> ArrayBuffer ----------------- */
+        function base64ToArrayBuffer(base64) {
+            const binary_string = atob(base64);
+            const len = binary_string.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binary_string.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        /* ----------------- Save uploaded template (Base64) ----------------- */
+        const fileInput = document.getElementById('fileUpload');
+        fileInput.addEventListener('change', (ev) => {
+            const f = ev.target.files[0];
+            if (!f) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const arrBuf = e.target.result;
+                // convert to base64 and store
+                const b64 = arrayBufferToBase64(arrBuf);
+                try {
+                    localStorage.setItem('sow_template_base64', b64);
+                    alert('Template stored in localStorage (sow_template_base64). You can now generate SOWs.');
+                    document.getElementById('templateBase64').value = b64;
+                    document.getElementById('base64Box').style.display = 'block';
+                } catch (err) {
+                    alert('Error saving template to localStorage: ' + err.message);
+                }
+            };
+            reader.readAsArrayBuffer(f);
+        });
+
+        document.getElementById('showBase64Btn').addEventListener('click', () => {
+            const b = localStorage.getItem('sow_template_base64') || '';
+            if (!b) {
+                alert('No template stored. Upload a .docx file first.');
+                return;
+            }
+            document.getElementById('templateBase64').value = b;
+            document.getElementById('base64Box').style.display = 'block';
+        });
+        document.getElementById('clearBase64Btn').addEventListener('click', () => {
+            localStorage.removeItem('sow_template_base64');
+            document.getElementById('templateBase64').value = '';
+            document.getElementById('base64Box').style.display = 'none';
+            alert('Cleared stored template.');
+        });
+
+        /* ----------------- Activities UI ----------------- */
+        const activitiesDiv = document.getElementById('activities');
+        let actCount = 0;
+
+        function addActivityUI(data) {
+            actCount++;
+            const d = document.createElement('div');
+            d.innerHTML = `
+    <label>Activity: <input class="a_activity" type="text" value="${data?.activity||''}"></label>
+    <label>Start: <input class="a_start" type="date" value="${data?.start||''}"></label>
+    <label>End: <input class="a_end" type="date" value="${data?.end||''}"></label>
+    <label>Effort: <input class="a_effort" type="number" value="${data?.effort||0}"></label>
+    <label>Daily Cost: <input class="a_dailyCost" type="number" value="${data?.dailyCost||0}"></label>
+    <label>Cost: <input class="a_cost" type="number" value="${data?.cost||0}"></label>
+    <label>Location: <input class="a_location" type="text" value="${data?.location||''}"></label>
+    <button class="removeBtn btn">Remove</button>
+    <hr>
+  `;
+            d.querySelector('.removeBtn').addEventListener('click', () => d.remove());
+            activitiesDiv.appendChild(d);
+        }
+        document.getElementById('addActivityBtn').addEventListener('click', () => addActivityUI());
+        document.getElementById('fillSampleBtn').addEventListener('click', () => {
+            addActivityUI({
+                activity: 'Recon & scoping',
+                start: '2025-10-01',
+                end: '2025-10-03',
+                effort: 3,
+                dailyCost: 800,
+                cost: 2400,
+                location: 'Remote'
+            });
+            addActivityUI({
+                activity: 'Web app tests',
+                start: '2025-10-04',
+                end: '2025-10-10',
+                effort: 7,
+                dailyCost: 900,
+                cost: 6300,
+                location: 'Onsite'
+            });
+        });
+
+        /* ----------------- Table XML generator ----------------- */
+        function generateTableXML(activities) {
+            // Table namespace and basic table grid
+            let tableXML = `<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+    <w:tblGrid>
+      <w:gridCol w:w="2000"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/>
+      <w:gridCol w:w="1000"/><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/><w:gridCol w:w="2000"/>
+    </w:tblGrid>`;
+            // header
+            const headers = ['Activity', 'Start', 'End', 'Effort', 'Daily Cost', 'Cost', 'Location'];
+            tableXML += '<w:tr>' + headers.map(h => `<w:tc><w:p><w:r><w:t>${escapeXml(h)}</w:t></w:r></w:p></w:tc>`).join('') + '</w:tr>';
+            // rows
+            activities.forEach(a => {
+                tableXML += '<w:tr>' +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(a.activity)}</w:t></w:r></w:p></w:tc>` +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(a.start)}</w:t></w:r></w:p></w:tc>` +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(a.end)}</w:t></w:r></w:p></w:tc>` +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(String(a.effort))}</w:t></w:r></w:p></w:tc>` +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(String(a.dailyCost))}</w:t></w:r></w:p></w:tc>` +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(String(a.cost))}</w:t></w:r></w:p></w:tc>` +
+                    `<w:tc><w:p><w:r><w:t>${escapeXml(a.location)}</w:t></w:r></w:p></w:tc>` +
+                    '</w:tr>';
+            });
+            tableXML += '</w:tbl>';
+            return tableXML;
+        }
+
+        function escapeXml(unsafe) {
+            if (unsafe === null || unsafe === undefined) return '';
+            return String(unsafe).replace(/[<>&'"]/g, function(c) {
+                return {
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '&': '&amp;',
+                    "'": '&apos;',
+                    '"': '&quot;'
+                }[c];
+            });
+        }
+
+        /* ----------------- Generate filled docx using PizZip only ----------------- */
+        document.getElementById('generateBtn').addEventListener('click', async() => {
+            document.getElementById('status').textContent = '';
+            // get template from paste box or localStorage
+            let base64 = (document.getElementById('pasteBase64').value || '').trim();
+            if (!base64) base64 = localStorage.getItem('sow_template_base64') || '';
+            if (!base64) {
+                alert('No template found. Upload a .docx first or paste a valid Base64 .docx.');
+                return;
+            }
+
+            // gather fields
+            const clientName = document.getElementById('clientName').value || '';
+            const projectName = document.getElementById('projectName').value || '';
+            const startDate = document.getElementById('startDate').value || '';
+            const endDate = document.getElementById('endDate').value || '';
+
+            // gather activities
+            const activities = Array.from(document.querySelectorAll('#activities > div')).map(div => {
+                return {
+                    activity: div.querySelector('.a_activity').value || '',
+                    start: div.querySelector('.a_start').value || '',
+                    end: div.querySelector('.a_end').value || '',
+                    effort: parseInt(div.querySelector('.a_effort').value) || 0,
+                    dailyCost: parseInt(div.querySelector('.a_dailyCost').value) || 0,
+                    cost: parseInt(div.querySelector('.a_cost').value) || 0,
+                    location: div.querySelector('.a_location').value || ''
+                };
+            });
+
+            let totalEffort = activities.reduce((s, a) => s + (a.effort || 0), 0);
+            let totalCost = activities.reduce((s, a) => s + (a.cost || 0), 0);
+
+            // build table xml
+            const tableXML = generateTableXML(activities);
+
+            try {
+                // Convert base64 -> ArrayBuffer -> use PizZip
+                const arrayBuffer = base64ToArrayBuffer(base64);
+                const zip = new PizZip(arrayBuffer);
+
+                // Read document.xml
+                const docXmlFile = zip.file('word/document.xml');
+                if (!docXmlFile) {
+                    throw new Error('word/document.xml not found in template — is this a valid .docx?');
+                }
+                let docXml = docXmlFile.asText();
+
+                // Replace placeholders (simple string replacement). Make sure template used single-curly placeholders.
+                docXml = docXml.replace(/{clientName}/g, escapeXml(clientName))
+                    .replace(/{projectName}/g, escapeXml(projectName))
+                    .replace(/{startDate}/g, escapeXml(startDate))
+                    .replace(/{endDate}/g, escapeXml(endDate))
+                    .replace(/{totalEffort}/g, escapeXml(String(totalEffort)))
+                    .replace(/{totalCost}/g, escapeXml(String(totalCost)))
+                    // activitiesTable is replaced with full table XML (which itself contains <w:...> tags)
+                    .replace(/{activitiesTable}/g, tableXML);
+
+                // Write updated document.xml back into zip
+                zip.file('word/document.xml', docXml);
+
+                // Generate final blob and trigger download
+                const outBlob = zip.generate({
+                    type: 'blob'
+                });
+                saveAs(outBlob, `SOW_Filled_${(projectName||'SOW').replace(/\s+/g,'_')}.docx`);
+                document.getElementById('status').textContent = 'Generated successfully — check your downloads.';
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').textContent = 'Error: ' + err.message;
+                alert('Generation failed: ' + err.message);
+            }
+        });
+
+        /* ----------------- Quick PizZip test ----------------- */
+        document.getElementById('testPizZip').addEventListener('click', () => {
+            const ok = (typeof PizZip !== 'undefined');
+            document.getElementById('pzStatus').textContent = 'PizZip loaded: ' + ok;
+        });
+    </script>
+</body>
+
+</html>
